@@ -1,53 +1,59 @@
+#include<filesystem>
+
 #include <openssl/ssl.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <unordered_map>
 
+#include <signal.h>
+
+#include <cstdlib>
 #include <netdb.h>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <openssl/err.h>
-
+#include <sys/file.h>
+#include <fcntl.h>
+#include <vector>
 
 #define PORT 8080
 #define BUFFER_SIZE 8192
 bool http = true;
 
-using std::cout;
-using std::flush;
+using namespace std;
 
-void logdata(std::ofstream& file, char* buffer, int r) {
+bool do_log(string data){
 
-    std::string data(buffer, r);
+    vector<string> http_methods = {"GET","POST","PUT","DELETE","HEAD","OPTIONS","PATCH","CONNECT","TRACE"}; 
+    for(string s:http_methods){
+        if(data.starts_with(s)){
+            //if(data.find("login") != std::string::npos){
+                return true;
+            //}
+        }
+    }
+    return false;
 
-    bool is_http =
-        data.starts_with("GET")  ||
-        data.starts_with("POST") ||
-        data.starts_with("PUT")  ||
-        data.starts_with("DELETE") ||
-        data.starts_with("HTTP/");
 
-    if (!is_http)
-        return;
-
-    size_t end = data.find("\r\n\r\n");
-
-    if (end == std::string::npos)
-        return;
-
-    file << data.substr(0, end);
-
-    file << "\n------------------------------------------------------------------------------\n";
 }
 
+void logdata(ofstream& file, char* buffer, int r) {
+    file.write(buffer, r);
+    file.flush();
+}
+struct  hostinfo{
+    hostent* serv;
+    string host;
+};
 
-hostent* get_serv_ip(std::string & req){
+hostinfo get_serv_ip(string & req){
     size_t pos = req.find("Host:");
 
-    if (pos == std::string::npos)
+    if (pos == string::npos)
         return {};
 
     pos += 5;
@@ -57,10 +63,10 @@ hostent* get_serv_ip(std::string & req){
     
     size_t end = req.find("\r\n", pos);
 
-    std::string url = req.substr(pos, end - pos);
+    string url = req.substr(pos, end - pos);
     end=url.find(":");
     http=true;
-    if (end!= std::string::npos){
+    if (end!= string::npos){
 
         //https
         http=false;
@@ -68,18 +74,24 @@ hostent* get_serv_ip(std::string & req){
     }
     
     hostent* serv = gethostbyname(url.c_str());
-
     
     if (!(serv&&
         serv->h_addr_list&&
         serv->h_addr_list[0])) {
-            std::cerr << "DNS lookup failed\n";
-            return nullptr;
+            cerr << "DNS lookup failed\n";
+            return {nullptr,nullptr};
     }
-    return serv;
+    return {serv, url};;
 }
 
 int main(){
+    /*int inc_fd[2];
+    pipe(inc_fd);
+    int inc=0;
+    int *inc_ptr=&inc;
+    write(inc_fd[1],inc_ptr,sizeof(int));*/
+
+    unordered_map<string,string> cert_cache;
     int server_fd=socket(AF_INET, SOCK_STREAM,0);
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -92,16 +104,15 @@ int main(){
     
     bind(server_fd,(sockaddr*)&addr,sizeof(addr));
     listen(server_fd,10);
-    std::ofstream file("packets.txt");
+    ofstream file("packets.txt");
     
-    cout << PORT << "\n";
 
     SSL_library_init();
     OpenSSL_add_all_algorithms();
     SSL_load_error_strings();
     
+    int lock_fd = open("/tmp/certgen.lock", O_CREAT | O_RDWR, 0666);
     while(true){
-        cout<<"\n."<<flush;
         
         int client = accept(server_fd,nullptr,nullptr);
 
@@ -119,14 +130,15 @@ int main(){
             memset(buffer, 0,BUFFER_SIZE);
             hostent* serv_dup={};
             int bytes=recv(client,buffer,BUFFER_SIZE-1,0);
-            std::string req(buffer);
+            string req(buffer);
             
-            std::string serv_ip;
-            std::string host;
+            string serv_ip;
+            string host;
             if (bytes>0){
-                //if (req.find("login")!=std::string::npos)
-
-                hostent* serv=get_serv_ip(req);
+                //if (req.find("login")!=string::npos)
+                
+                hostinfo hi=get_serv_ip(req);
+                hostent* serv=hi.serv;
                 
                 if (serv){
 
@@ -137,7 +149,7 @@ int main(){
 
                     
                     serv_ip=inet_ntoa(ip);
-                    host=serv->h_name;
+                    host=hi.host;
 
                 }else{
                     exit(0);
@@ -169,16 +181,22 @@ int main(){
 
                 SSL_set_fd(remote_ssl, remote_fd);
                 
-                SSL_set_tlsext_host_name(remote_ssl, serv_dup->h_name);
+                SSL_set_tlsext_host_name(remote_ssl, host.c_str());
 
-                if (SSL_connect(remote_ssl) <= 0) {
+                int ret = SSL_connect(remote_ssl);
+
+                if (ret <= 0) {
+                    int err = SSL_get_error(remote_ssl, ret);
+
+                    fprintf(stderr, "SSL_connect failed\n");
+                    fprintf(stderr, "SSL_get_error = %d\n", err);
+
                     ERR_print_errors_fp(stderr);
+
                     exit(1);
                 }
-                cout<<"\n"<<serv_dup->h_name<<serv_ip<<"\n"<<flush;
-            
+                            
                 if(http){
-                    cout<<"conn\n"<<flush;
 
                     send(remote_fd,buffer,bytes,0);
                     
@@ -195,49 +213,84 @@ int main(){
 			        const char* resp = "HTTP/1.1 200 Connection Established\r\n\r\n";
                     send(client, resp, strlen(resp), 0);
                     SSL_CTX* server_ctx = SSL_CTX_new(TLS_server_method());
+                    
+                    string crt;
+                    
+                    if (cert_cache.find(host) == cert_cache.end()) {
 
-                    std::ofstream san("san.cnf");
+                        flock(lock_fd, LOCK_EX);
 
-                    san <<
-                    "[req]\n"
-                    "distinguished_name=req_distinguished_name\n"
-                    "req_extensions=v3_req\n"
-                    "prompt=no\n"
-                    "\n"
-                    "[req_distinguished_name]\n"
-                    "CN=" << host << "\n"
-                    "\n"
-                    "[v3_req]\n"
-                    "subjectAltName=@alt_names\n"
-                    "\n"
-                    "[alt_names]\n"
-                    "DNS.1=" << host << "\n";
+                        // double-check after locking (important)
+                        if (cert_cache.find(host) == cert_cache.end()) {
 
-                    san.close();
-                    std::string cmd1 =
-                    "openssl req -new "
-                    "-key CA/example_nopass.key "
-                    "-out temp.csr "
-                    "-config san.cnf";
+                            string id = host; 
 
-                    system(cmd1.c_str());
+                            string cnf = "/tmp/" + id + ".cnf";
+                            string csr = "/tmp/" + id + ".csr";
+                            crt = "/tmp/" + id + ".crt";
 
-                    std::string cmd2 =
-                    "openssl x509 -req "
-                    "-in temp.csr "
-                    "-CA CA/rootCA.pem "
-                    "-CAkey CA/rootCA_nopass.key "
-                    "-CAcreateserial "
-                    "-out temp.crt "
-                    "-days 365 "
-                    "-sha256 "
-                    "-extfile san.cnf "
-                    "-extensions v3_req";
+                            ofstream san(cnf);
 
-                    system(cmd2.c_str());
+                            san <<
+                            "[req]\n"
+                            "distinguished_name=req_distinguished_name\n"
+                            "req_extensions=v3_req\n"
+                            "prompt=no\n"
+                            "\n"
+                            "[req_distinguished_name]\n"
+                            "CN=" << host << "\n"
+                            "\n"
+                            "[v3_req]\n"
+                            "basicConstraints=critical,CA:FALSE\n"
+                            "keyUsage=critical,digitalSignature,keyEncipherment\n"
+                            "extendedKeyUsage=serverAuth\n"
+                            "subjectAltName=@alt_names\n"
+                            "\n"
+                            "[alt_names]\n"
+                            "DNS.1=" << host << "\n";
+
+                            san.close();
+
+                            string cmd1 =
+                                "openssl req -new "
+                                "-key CA/example_nopass.key "
+                                "-out " + csr +
+                                " -config " + cnf;
+
+                            string cmd2 =
+                                "openssl x509 -req "
+                                "-in " + csr +
+                                " -CA CA/rootCA.pem "
+                                "-CAkey CA/rootCA_nopass.key "
+                                "-CAcreateserial "
+                                "-out " + crt +
+                                " -days 365 "
+                                "-sha256 "
+                                "-extfile " + cnf +
+                                " -extensions v3_req";
+
+                            if (system(cmd1.c_str()) != 0) {
+                                fprintf(stderr, "cmd1 failed\n");
+                            }
+
+                            if (system(cmd2.c_str()) != 0) {
+                                fprintf(stderr, "cmd2 failed\n");
+                            }
+
+                            cert_cache[host] = crt;
+                        }
+
+                        flock(lock_fd, LOCK_UN);
+                    }
+                    else {
+                         crt = cert_cache[host];
+                    }
+
+
+                    system(("openssl x509 -in " + crt + " -subject -noout").c_str());
                     SSL_CTX_use_certificate_file(
                         server_ctx,
-                        "temp.crt",
+                        crt.c_str(),
                         SSL_FILETYPE_PEM
                     );
 
@@ -251,10 +304,11 @@ int main(){
 
                     SSL_set_fd(client_ssl, client);
 
-                    if (SSL_accept(client_ssl) <= 0) {
+                    if (!SSL_accept(client_ssl))
+                    {
                         ERR_print_errors_fp(stderr);
-                        exit(1);
                     }
+                    
                     while (true) {
 
                         FD_ZERO(&fds);
@@ -262,7 +316,7 @@ int main(){
                         FD_SET(client, &fds);
                         FD_SET(remote_fd, &fds);
 
-                        int maxfd = std::max(client, remote_fd);
+                        int maxfd = max(client, remote_fd);
 
                         int activity = select(maxfd + 1,&fds,nullptr,nullptr,nullptr);
 
@@ -271,16 +325,32 @@ int main(){
 
                         // browser -> server
                         if (FD_ISSET(client, &fds)) {
-
+                            
                             int r = SSL_read(client_ssl, buffer, BUFFER_SIZE);
 
                             if (r <= 0)
                                 break;
+                            string fname="packets/"+to_string(getpid());
+                            ofstream file1(fname, ios::binary);
+                            file1.write(buffer, r);
+                            file1.close();
+                            /*read(inc_fd[0],inc_ptr,sizeof(int));
+                            (*inc_ptr)++;
+                            cout<<*inc_ptr;
+                            write(inc_fd[1],inc_ptr,sizeof(int));*/
 
-                            logdata(file, buffer, r);
+                            
+                        
+                            raise(SIGSTOP);
 
-                            SSL_write(remote_ssl, buffer, r);
-                            }
+                            ifstream file2(fname, ios::binary);
+
+                            std::string packet(
+                                (std::istreambuf_iterator<char>(file2)),
+                                std::istreambuf_iterator<char>()
+                            );
+                            SSL_write(remote_ssl, packet.data(), r);
+                        }
 
 
                         // server -> browser
@@ -291,7 +361,7 @@ int main(){
                             if (r <= 0)
                                 break;
 
-                            logdata(file, buffer, r);
+                            //logdata(file, buffer, r);
 
                             SSL_write(client_ssl, buffer, r);
                         }
