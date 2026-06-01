@@ -3,7 +3,8 @@ CXXFLAGS = -std=c++20 -lssl -lcrypto
 
 TARGET = sp
 SRC = $(wildcard *.cpp)
-
+packets:
+	mkdir -p packets
 
 all: $(TARGET)
 
