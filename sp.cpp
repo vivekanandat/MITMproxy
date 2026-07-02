@@ -1,5 +1,3 @@
-#include<filesystem>
-
 #include <openssl/ssl.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -8,6 +6,8 @@
 #include <unordered_map>
 
 #include <signal.h>
+
+#include <sys/un.h>
 
 #include <cstdlib>
 #include <netdb.h>
@@ -20,31 +20,84 @@
 #include <fcntl.h>
 #include <vector>
 
-#define PORT 8080
+#include <chrono>
+#include <mutex>
+#include <sys/wait.h>
+
+int PORT=8080;
 #define BUFFER_SIZE 8192
 bool http = true;
 
+
+volatile bool running = true;
+
+void stop_handler(int) {
+    running = false;
+}
+
 using namespace std;
 
-bool do_log(string data){
+mutex logMutex;
+string LOG_PATH = "../backend/ingest/proxy_events.log";
 
-    vector<string> http_methods = {"GET","POST","PUT","DELETE","HEAD","OPTIONS","PATCH","CONNECT","TRACE"}; 
-    for(string s:http_methods){
-        if(data.starts_with(s)){
-            //if(data.find("login") != std::string::npos){
-                return true;
-            //}
+string jsonEscape(const std::string& input) {
+    std::string out;
+    out.reserve(input.size());
+    for (char c : input) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:   out += c;
         }
     }
-    return false;
-
-
+    return out;
 }
 
-void logdata(ofstream& file, char* buffer, int r) {
-    file.write(buffer, r);
-    file.flush();
+
+void reap_children(int) {
+    while (waitpid(-1, nullptr, WNOHANG) > 0);
 }
+
+
+
+void logRequest(
+    const string& sessionId,
+    const string& method,
+    const string& host,
+    const string& path,
+    int statusCode,
+    int requestSize,
+    int responseSize,
+    bool tls,
+    bool flagged,
+    const string& flaggedReason = ""
+) {
+    std::lock_guard<std::mutex> lock(logMutex);
+
+    std::ofstream out(LOG_PATH, std::ios::app);
+    if (!out.is_open()) {
+        std::cerr << "Failed to open log file: " << LOG_PATH << "\n";
+        return;
+    }
+    out << "{"
+        << "\"session_id\":\"" << jsonEscape(sessionId) << "\","
+        << "\"method\":\"" << jsonEscape(method) << "\","
+        << "\"host\":\"" << jsonEscape(host) << "\","
+        << "\"path\":\"" << jsonEscape(path) << "\","
+        << "\"status_code\":" << statusCode << ","
+        << "\"request_size\":" << requestSize << ","
+        << "\"response_size\":" << responseSize << ","
+        << "\"tls\":" << (tls ? "true" : "false") << ","
+        << "\"flagged\":" << (flagged ? "true" : "false") << ","
+        << "\"flagged_reason\":" << (flaggedReason.empty() ? "null" : "\"" + jsonEscape(flaggedReason) + "\"")
+        << "}\n";
+
+    out.flush(); // important: flush so the ingest worker's fs.watch sees it promptly
+}
+
 struct  hostinfo{
     hostent* serv;
     string host;
@@ -81,16 +134,39 @@ hostinfo get_serv_ip(string & req){
             cerr << "DNS lookup failed\n";
             return {nullptr,nullptr};
     }
-    return {serv, url};;
+    return {serv, url};
 }
 
-int main(){
-    /*int inc_fd[2];
-    pipe(inc_fd);
-    int inc=0;
-    int *inc_ptr=&inc;
-    write(inc_fd[1],inc_ptr,sizeof(int));*/
+   
+int main(int argc, char* argv[]) {
+    bool flaged=false;
+    string flagedReason="";
+    signal(SIGCHLD, reap_children);
+    if (argc > 1) {
+        try {
+            size_t pos;
+            PORT = std::stoi(argv[1], &pos);
 
+
+            if (pos != std::strlen(argv[1])) {
+                throw std::invalid_argument("extra characters");
+            }
+
+            if ( PORT < 0 || PORT > 65535) {
+                std::cout << "Enter a valid port number (0-65535)\n";
+                return 1;
+            }
+        } catch (...) {
+            std::cout << "Usage: " << argv[0] << " [port number]\n";
+            return 1;
+        }
+    }
+    string sessionId;
+    if (argc > 2) {
+        sessionId = argv[2];
+    }
+ 
+    
     unordered_map<string,string> cert_cache;
     int server_fd=socket(AF_INET, SOCK_STREAM,0);
     int opt = 1;
@@ -112,7 +188,9 @@ int main(){
     SSL_load_error_strings();
     
     int lock_fd = open("/tmp/certgen.lock", O_CREAT | O_RDWR, 0666);
-    while(true){
+    setpgid(0, 0);
+    signal(SIGTERM, stop_handler);
+    while(running){
         
         int client = accept(server_fd,nullptr,nullptr);
 
@@ -120,7 +198,7 @@ int main(){
             perror("accept");
             exit(0);
         }
-        
+
         
         pid_t pid = fork();
         if (pid == 0) {
@@ -131,6 +209,20 @@ int main(){
             hostent* serv_dup={};
             int bytes=recv(client,buffer,BUFFER_SIZE-1,0);
             string req(buffer);
+
+            string method = "UNKNOWN";
+            string reqPath = "/";
+            {
+                size_t sp1 = req.find(' ');
+                size_t sp2 = req.find(' ', sp1 + 1);
+                if (sp1 != string::npos && sp2 != string::npos) {
+                    method = req.substr(0, sp1);
+                    reqPath = req.substr(sp1 + 1, sp2 - sp1 - 1);
+                }
+            }
+            long requestSize = bytes;
+            long responseSize = 0;
+            int statusCode = 0;
             
             string serv_ip;
             string host;
@@ -197,6 +289,7 @@ int main(){
                 }
                             
                 if(http){
+                    logRequest(sessionId, method, host, reqPath, statusCode, requestSize, responseSize, !http, flaged, flagedReason);
 
                     send(remote_fd,buffer,bytes,0);
                     
@@ -204,6 +297,10 @@ int main(){
                         int r = recv(remote_fd, buffer, BUFFER_SIZE, 0);
                         if (r <= 0)
                             break;
+                        if (statusCode == 0 && r > 12) {
+                            sscanf(buffer, "HTTP/%*d.%*d %d", &statusCode);
+                        }
+                        responseSize += r;
                         send(client, buffer, r, 0);
                     }
                 }
@@ -310,6 +407,8 @@ int main(){
                     }
                     
                     while (true) {
+                        if (!running)
+                            break;
 
                         FD_ZERO(&fds);
 
@@ -317,11 +416,14 @@ int main(){
                         FD_SET(remote_fd, &fds);
 
                         int maxfd = max(client, remote_fd);
-
-                        int activity = select(maxfd + 1,&fds,nullptr,nullptr,nullptr);
+                        struct timeval tv;
+                        tv.tv_sec = 2;
+                        tv.tv_usec = 0;
+                        int activity=select(maxfd + 1, &fds, nullptr, nullptr, &tv);
 
                         if (activity < 0)
                             break;
+                        logRequest(sessionId, method, host, reqPath, statusCode, requestSize, responseSize, !http, flaged, flagedReason);
 
                         // browser -> server
                         if (FD_ISSET(client, &fds)) {
@@ -330,28 +432,39 @@ int main(){
 
                             if (r <= 0)
                                 break;
-                            string fname="packets/"+to_string(getpid());
-                            ofstream file1(fname, ios::binary);
-                            file1.write(buffer, r);
-                            file1.close();
-                            /*read(inc_fd[0],inc_ptr,sizeof(int));
-                            (*inc_ptr)++;
-                            cout<<*inc_ptr;
-                            write(inc_fd[1],inc_ptr,sizeof(int));*/
 
-                            
-                        
-                            raise(SIGSTOP);
+                            requestSize += r;
 
-                            ifstream file2(fname, ios::binary);
+                            int edit_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+                            sockaddr_un editor_addr{};
+                            editor_addr.sun_family = AF_UNIX;
+                            strncpy(editor_addr.sun_path, "/tmp/mitm_editor.sock", sizeof(editor_addr.sun_path) - 1);
 
-                            std::string packet(
-                                (std::istreambuf_iterator<char>(file2)),
-                                std::istreambuf_iterator<char>()
-                            );
-                            SSL_write(remote_ssl, packet.data(), r);
+                            if (connect(edit_sock, (sockaddr*)&editor_addr, sizeof(editor_addr)) < 0) {
+
+                                SSL_write(remote_ssl, buffer, r);
+                                close(edit_sock);
+                            } else {
+                                uint32_t len_be = htonl((uint32_t)r);
+                                write(edit_sock, &len_be, 4);
+                                write(edit_sock, buffer, r);
+
+                                uint32_t rlen_be;
+                                if (read(edit_sock, &rlen_be, 4) == 4) {
+                                    uint32_t rlen = ntohl(rlen_be);
+                                    std::string packet(rlen, '\0');
+                                    size_t got = 0;
+                                    while (got < rlen) {
+                                        ssize_t n = read(edit_sock, &packet[got], rlen - got);
+                                        if (n <= 0) break;
+                                        got += n;
+                                    }
+
+                                    SSL_write(remote_ssl, packet.data(), got);
+                                }
+                                close(edit_sock);
+                            }
                         }
-
 
                         // server -> browser
                         if (FD_ISSET(remote_fd, &fds)) {
@@ -361,7 +474,11 @@ int main(){
                             if (r <= 0)
                                 break;
 
-                            //logdata(file, buffer, r);
+                            if (statusCode == 0 && r > 12) {
+                                sscanf(buffer, "HTTP/%*d.%*d %d", &statusCode);
+                            }
+                            responseSize += r;
+
 
                             SSL_write(client_ssl, buffer, r);
                         }
@@ -372,6 +489,7 @@ int main(){
                 perror("connect");
                 exit(1);
             }
+
 
             close(client);
 
