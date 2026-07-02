@@ -10,29 +10,13 @@ A custom C++ MITM proxy that intercepts, inspects, and can modify live HTTPS tra
 persistence, a REST API, real-time streaming, and a web dashboard. The proxy itself is the core engineering work; this project makes it usable and observable as a real tool instead of a console script.
 
 ## Architecture  
-┌────────────────────┐
-│    C++ MITM Proxy   │
-│  (fork per conn,     │
-│   OpenSSL, cert-gen)  │
-└──────────┬───────────┘
-           │ writes JSON lines
-           ▼
-┌────────────────────┐
-│   proxy_events.log   │
-└──────────┬───────────┘
-           │ tailed by fs.watch
-           ▼
-┌────────────────────┐
-│  Node/Express API    │
-│  + Socket.io          │
-│  + Postgres            │
-└──────────┬───────────┘
-           │ REST + WebSocket
-           ▼
-┌────────────────────┐
-│   React Dashboard     │
-│  (Tailwind, Recharts) │
-└────────────────────┘
+
+```mermaid
+flowchart TD
+    A[C++ MITM Proxy<br/>fork per conn, OpenSSL, cert-gen] -->|writes JSON lines| B[proxy_events.log]
+    B -->|tailed by fs.watch| C[Node/Express API<br/>Socket.io + Postgres]
+    C -->|REST + WebSocket| D[React Dashboard<br/>Tailwind, Recharts]
+```
 
 ## Stack
 
