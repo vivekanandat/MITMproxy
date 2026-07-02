@@ -10,7 +10,7 @@ A custom C++ MITM proxy that intercepts, inspects, and can modify live HTTPS tra
 persistence, a REST API, real-time streaming, and a web dashboard. The proxy itself is the core engineering work; this project makes it usable and observable as a real tool instead of a console script.
 
 ## Architecture
-<img width="300" height="200" alt="mitm_dashboard_architecture" src="https://github.com/user-attachments/assets/85d48358-eb28-4c29-b482-4fc4b420eac4" />
+<img width="300" height="200" alt="mitm_dashboard_architecture" src="https://github.com/user-attachments/assets/04106cf7-bd12-4286-8139-43def945699d" />
 <svg width="100%" viewBox="0 0 680 454" role="img" style="" xmlns="http://www.w3.org/2000/svg">
 <title style="fill:rgb(0, 0, 0);stroke:none;color:rgb(11, 11, 11);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">MITM proxy dashboard architecture</title>
 <desc style="fill:rgb(0, 0, 0);stroke:none;color:rgb(11, 11, 11);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">The C++ MITM proxy writes JSON lines to a log file, which is tailed and inserted into Postgres by a Node/Express + Socket.io backend, which serves a React dashboard over REST and WebSocket.</desc>
