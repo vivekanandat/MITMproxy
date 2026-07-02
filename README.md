@@ -11,26 +11,26 @@ persistence, a REST API, real-time streaming, and a web dashboard. The proxy its
 
 ## Architecture
 
-┌────────────────────┐      writes JSON lines       ┌──────────────────┐
-│  C++ MITM Proxy    │ ──────────────────────────▶  │proxy_events.log  │
-│  (fork per conn,   │                              └──────────────────┘
-│  OpenSSL, cert-gen)                                       │
-└───────────────────┘                                 tailed by fs.watch
-│
-▼
-┌────────────────────┐
-│  Node/Express API  │
-│  + Socket.io       │
-│  + Postgres        │
-└────────────────────┘
-│
-REST + WebSocket
-│
-▼
-┌──────────────────────┐
-│  React Dashboard     │
-│  (Tailwind, Recharts)│
-└──────────────────────┘
+┌────────────────────┐      writes JSON lines       ┌──────────────────┐  
+│  C++ MITM Proxy    │ ──────────────────────────▶  │proxy_events.log  │  
+│  (fork per conn,   │                              └──────────────────┘  
+│  OpenSSL, cert-gen)                                       │  
+└───────────────────┘                                 tailed by fs.watch  
+│  
+▼  
+┌────────────────────┐  
+│  Node/Express API  │  
+│  + Socket.io       │  
+│  + Postgres        │  
+└────────────────────┘  
+│  
+REST + WebSocket  
+│  
+▼  
+┌──────────────────────┐  
+│  React Dashboard     │  
+│  (Tailwind, Recharts)│  
+└──────────────────────┘  
 ## Stack
 
 - **Proxy:** C++, OpenSSL, raw sockets, fork-per-connection
