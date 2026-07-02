@@ -11,7 +11,7 @@ persistence, a REST API, real-time streaming, and a web dashboard. The proxy its
 
 ## Architecture
 
-┌─────────┐      writes JSON lines       ┌──────────────────┐  
+┌─────────┐     &nbsp;&nbsp;&nbsp; writes JSON lines       ┌──────────────────┐  
 │  C++ MITM Proxy    │ ──────────────────────────▶  │proxy_events.log  │  
 │  (fork per conn,   │                              └──────────────────┘  
 │  OpenSSL, cert-gen)                                       │  
