@@ -15,7 +15,7 @@ persistence, a REST API, real-time streaming, and a web dashboard. The proxy its
 │  C++ MITM Proxy    │ ──────────────────────────▶  │proxy_events.log  │  
 │  (fork per conn,   │                              └──────────────────┘  
 │  OpenSSL, cert-gen)                                       │  
-└───────────────────┘                                 tailed by fs.watch  
+└───────────────────┘                              tailed by fs.watch  
 │  
 ▼  
 ┌────────────────────┐  
