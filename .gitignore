@@ -1,5 +1,5 @@
-CA/
-packets.txt
-sp
-
-packets/
+MITMproxy/CA/
+MITMproxy/packets.txt
+MITMproxy/packets/
+frontend/node_modules
+backend/node_modules
